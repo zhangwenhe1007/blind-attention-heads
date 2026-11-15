@@ -1,0 +1,146 @@
+diff --git a/src/flash_attn/flash_api.hpp b/src/flash_attn/flash_api.hpp
+index 6039491..734ec6d 100644
+--- a/src/flash_attn/flash_api.hpp
++++ b/src/flash_attn/flash_api.hpp
+@@ -315,7 +315,9 @@ void mha_fwd_kvcache(
+     const float softcap,
+     cudaStream_t stream,
+     uint64_t* blockmask = nullptr,
+-    int block_window_size = 0
++    int block_window_size = 0,
++    int q_row_stride_override = 0,   // flagged-heads patch: run on a subset of heads of wider q / kv / out rows
++    int kv_row_stride_override = 0
+ ) {
+     // causal=true is the same as causal=false in this case
+     if (seqlen_q == 1) { is_causal = false; }
+@@ -390,5 +392,7 @@ void mha_fwd_kvcache(
+         params.num_splits = 1;
+     }
+ 
++    if (q_row_stride_override > 0) { params.q_row_stride = q_row_stride_override; params.o_row_stride = q_row_stride_override; }
++    if (kv_row_stride_override > 0) { params.k_row_stride = kv_row_stride_override; params.v_row_stride = kv_row_stride_override; }
+     run_mha_fwd(params, stream, true);
+ }
+\ No newline at end of file
+diff --git a/src/model/minicpm4/minicpm4_attn.cuh b/src/model/minicpm4/minicpm4_attn.cuh
+index 99002a6..2be1abc 100644
+--- a/src/model/minicpm4/minicpm4_attn.cuh
++++ b/src/model/minicpm4/minicpm4_attn.cuh
+@@ -23,6 +23,39 @@ struct MiniCPM4Attention {
+     int block_window_size;
+     int sparse_switch;
+     bool use_compress_lse;
++    uint32_t dense_kv_mask = 0;  // flagged-heads patch: bit h set -> KV head h of this layer reads every block
++    bool dense_by_kernel = false;  // flagged-heads patch: true -> dense kernel overwrites the flagged heads (no mask change)
++
++    // flagged-heads patch: full attention for the flagged KV heads with the dense kernel on a head subset, written over the
++    // outputs that the shipped sparse call produced for their query heads (GQA: query heads h*G .. h*G+G-1)
++    void dense_heads_overwrite(const Stream& stream, int32_t num_tokens, int32_t seqlen_k, T* q, T* k_cache, T* v_cache,
++                               int* seqlens_k, const Mask& mask) {
++        const int G = this->num_attention_heads / this->num_key_value_heads;
++        for (int h = 0; h < this->num_key_value_heads; h++) {
++            if (!(this->dense_kv_mask & (1u << h))) continue;
++            mha_fwd_kvcache(
++                TypeTraits<T>::type_code()==1, 1, num_tokens, seqlen_k, G, 1, this->head_dim,
++                q + h * G * this->head_dim, k_cache + h * this->head_dim, v_cache + h * this->head_dim,
++                seqlens_k, mask, this->attn_output + h * G * this->head_dim,
++                this->softmax_lse, this->softmax_lse_accum, this->oaccum,
++                rsqrtf(float(this->head_dim)), true, -1, -1, 0, stream.stream, nullptr, 0,
++                this->num_attention_heads * this->head_dim, this->num_key_value_heads * this->head_dim);
++        }
++    }
++
++    // flagged-heads patch: full attention in the flagged KV heads = every bit of their rows in the shipped block mask.
++    // Rows are [kv_head][token][uint64 word] as topk_to_uint64_func writes them and fwdIterator reads them.
++    void force_dense_heads(const Stream& stream, uint64_t* blockmask, int num_tokens, int k_len) {
++        if (this->dense_kv_mask == 0 || blockmask == nullptr || this->dense_by_kernel) return;
++        const int k_blocks = (k_len + 64 - 1) / 64;
++        const int n_uint64_per_row = (k_blocks + 64 - 1) / 64;
++        for (int h = 0; h < this->num_key_value_heads; h++) {
++            if (this->dense_kv_mask & (1u << h)) {
++                cudaMemsetAsync(blockmask + (size_t)h * num_tokens * n_uint64_per_row, 0xFF,
++                                (size_t)num_tokens * n_uint64_per_row * sizeof(uint64_t), stream.stream);
++            }
++        }
++    }
+ 
+     MiniCPM4Attention(int hidden_size, int num_attention_heads, int num_key_value_heads, int head_dim, float rms_norm_eps, int sink_window_size, int block_window_size, int sparse_switch, bool use_compress_lse) {
+         this->hidden_size = hidden_size;
+@@ -168,6 +201,7 @@ struct MiniCPM4Attention {
+                 num_history_tokens+num_tokens
+             );
+             blockmask = kv_cache->blockmask;
++            this->force_dense_heads(stream, blockmask, num_tokens, num_history_tokens+num_tokens);
+         }
+         cuda_perf_stop_on_stream_f(M4_PREFILL_ATTN_STAGE1, stream.stream);
+ 
+@@ -198,6 +232,10 @@ struct MiniCPM4Attention {
+             blockmask,
+             blockmask ? this->block_window_size : 0 // TODO fix this condition
+         );
++        if (this->dense_by_kernel && blockmask != nullptr && this->dense_kv_mask != 0) {
++            this->dense_heads_overwrite(stream, num_tokens, num_history_tokens+num_tokens, this->q_proj->output,
++                                        kv_cache->k_cache, kv_cache->v_cache, nullptr, Mask(nullptr));
++        }
+         cuda_perf_stop_on_stream_f(M4_PREFILL_ATTN_STAGE2, stream.stream);
+         cuda_perf_stop_on_stream_f(M4_PREFILL_ATTN_CORE, stream.stream);
+ 
+@@ -282,6 +320,7 @@ struct MiniCPM4Attention {
+                 padded_length
+             );
+             blockmask = kv_cache->blockmask;
++            this->force_dense_heads(stream, blockmask, num_tokens, padded_length);
+         }
+         cuda_perf_stop_on_stream_f(M4_DECODE_ATTN_STAGE1, stream.stream);
+ 
+@@ -312,6 +351,10 @@ struct MiniCPM4Attention {
+             blockmask,
+             blockmask ? this->block_window_size : 0 // TODO fix this condition
+         );
++        if (this->dense_by_kernel && blockmask != nullptr && this->dense_kv_mask != 0) {
++            this->dense_heads_overwrite(stream, num_tokens, padded_length, q, kv_cache->k_cache, kv_cache->v_cache,
++                                        cache_length, mask);
++        }
+         cuda_perf_stop_on_stream_f(M4_DECODE_ATTN_STAGE2, stream.stream);
+         cuda_perf_stop_on_stream_f(M4_DECODE_ATTN_CORE, stream.stream);
+ 
+diff --git a/src/model/minicpm4/minicpm4_model.cuh b/src/model/minicpm4/minicpm4_model.cuh
+index 0d751b5..240f35a 100644
+--- a/src/model/minicpm4/minicpm4_model.cuh
++++ b/src/model/minicpm4/minicpm4_model.cuh
+@@ -1,4 +1,7 @@
+ #pragma once
++#include <cstdlib>
++#include <string>
++#include <cstdio>
+ #include "../model.cuh"
+ #include "minicpm4_layer.cuh"
+ #include "minicpm4_kvcache.cuh"
+@@ -66,6 +69,27 @@ struct MiniCPM4Impl : Model {
+         for (int i = 0; i < num_hidden_layers; i++) {
+             layers.push_back(new MiniCPM4Layer<T>(hidden_size, intermediate_size, num_attention_heads, num_key_value_heads, head_dim, rms_norm_eps, residual_scale, sink_window_size, block_window_size, sparse_switch, use_compress_lse));
+         }
++        // flagged-heads patch: CPMCU_DENSE_KV_HEADS="9.0,16.0,22.0" gives those layer.kv_head pairs full attention
++        if (const char* env = std::getenv("CPMCU_DENSE_KV_HEADS")) {
++            std::string spec(env);
++            size_t pos = 0;
++            while (pos < spec.size()) {
++                size_t comma = spec.find(',', pos);
++                std::string item = spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
++                size_t dot = item.find('.');
++                if (dot != std::string::npos) {
++                    int l = std::stoi(item.substr(0, dot)), h = std::stoi(item.substr(dot + 1));
++                    if (l < 0 || l >= num_hidden_layers || h < 0 || h >= num_key_value_heads)
++                        throw std::invalid_argument("CPMCU_DENSE_KV_HEADS entry out of range: " + item);
++                    layers[l]->attn->dense_kv_mask |= (1u << h);
++                    const char* mode = std::getenv("CPMCU_DENSE_KV_MODE");
++                    layers[l]->attn->dense_by_kernel = (mode != nullptr && std::string(mode) == "kernel");
++                    fprintf(stderr, "[flagged-heads patch] full attention in layer %d kv head %d (%s)\n", l, h, layers[l]->attn->dense_by_kernel ? "dense kernel" : "all-ones block mask");
++                }
++                if (comma == std::string::npos) break;
++                pos = comma + 1;
++            }
++        }
+         norm = new RMSNorm<T>(hidden_size, rms_norm_eps);
+         lm_head = new LMHead<T>(hidden_size, vocab_size, scale_lmhead);
+     }

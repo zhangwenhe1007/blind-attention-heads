@@ -1,0 +1,17 @@
+--- a/scripts/data/template.py
++++ b/scripts/data/template.py
+@@ -15,6 +15,14 @@
+ Templates = {
+     'base': "{task_template}",
+ 
++    # chat templates of the checkpoints in "Lost in a Few Heads" (added by blind-attention-heads/third_party/ruler_templates.patch)
++    # the MiniCPM4 lineage: InfLLM-V2-8B, MiniCPM4-8B, MiniCPM4.1-8B, NOSA-8B, Dash-8B, NSA-8B
++    'minicpm4': "<|im_start|>user\n{task_template}<|im_end|>\n<|im_start|>assistant\n",
++    # Qwen3 with thinking disabled, as its own chat template writes it with enable_thinking=False
++    'qwen3-nothink': "<|im_start|>user\n{task_template}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    # DeepSeek-R1-Distill with the thinking block closed (its tokenizer adds the beginning-of-sequence token itself)
++    'r1-nothink': "<｜User｜>{task_template}<｜Assistant｜><think>\n\n</think>\n\n",
++
+     'meta-chat': "[INST] {task_template} [/INST]",
+ 
+     'vicuna-chat': "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. USER: {task_template} ASSISTANT:",

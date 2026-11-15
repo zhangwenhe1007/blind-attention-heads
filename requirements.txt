@@ -1,0 +1,9 @@
+# What the paper's runs used (Python 3.11, CUDA 12). The core of the package needs none of these.
+torch==2.6.0
+transformers==4.57.3
+flash-attn==2.7.4.post1
+accelerate==1.15.0
+sentencepiece
+# InfLLM-V2's attention kernels are not on PyPI. Build them from the producers' repository:
+#   https://github.com/OpenBMB/infllmv2_cuda_impl   (commit 93cf2ec28e5a7acebe3f0bb7329b6c73a1be91f6)
+pytest
