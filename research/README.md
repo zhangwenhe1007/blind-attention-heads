@@ -22,6 +22,15 @@ python research/seerr_run.py $C --arm dense --out dense.json                    
 
 Prompts for Qwen3 use RULER's `qwen3-nothink` template (`TEMPLATE=qwen3-nothink bash scripts/make_ruler_prompts.sh ...`).
 
+To calibrate a SeerAttention-R checkpoint, run the probe on calibration prompts. Its `score_integrated_kv` field holds
+the score of every key-value head, by layer, and `blindheads.threshold_rule` turns the scores into a head set, with
+`seerr_run.py --arm full --kv_heads ...` as the evaluation of one step.
+
+```bash
+python research/fixgain_path_seerr.py --repo SeerAttention --gates SeerAttention-Decode-Qwen3-8B-AttnGates --base Qwen3-8B \
+    --data CALIBRATION_PROMPTS --n 20 --nodes 16 --rule mid --out probe.json
+```
+
 ## The deployable 4-bit path
 
 `qk_fast.py` keeps the packed 4-bit keys of the flagged heads in a side cache and scans them with Triton kernels, and

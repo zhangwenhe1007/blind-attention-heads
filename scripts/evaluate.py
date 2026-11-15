@@ -30,10 +30,14 @@ from blindheads import infllm_v2, load_heads, parse_heads, ruler  # noqa: E402
 
 
 def resolve_heads(spec):
+    """A head file, the name of a shipped head set, or units such as 9.0,16.0,22.0."""
     try:
         return load_heads(spec).heads
-    except FileNotFoundError:
-        return [f"{layer}.{head}" for layer, head in parse_heads(spec)]
+    except FileNotFoundError as missing:
+        try:
+            return [f"{layer}.{head}" for layer, head in parse_heads(spec)]
+        except ValueError:
+            raise SystemExit(f"--heads: {missing}, and {spec!r} is not a list of units such as 9.0,16.0,22.0") from None
 
 
 def main():

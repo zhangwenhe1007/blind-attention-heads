@@ -36,7 +36,8 @@ def main():
     ap.add_argument("--steps", type=int, default=10, help="needle tokens teacher-forced per prompt")
     ap.add_argument("--share", type=float, default=rule.SHARE)
     ap.add_argument("--max_heads", type=int, default=None, help="stop the sweep beyond this many heads")
-    ap.add_argument("--scores", default=None, help="reuse the scores of an earlier run (its --out file) and skip the probe")
+    ap.add_argument("--scores", default=None, help="reuse the scores of an earlier run (its --out file, its .scores.json file "
+                                                   "or a shipped head file) and skip the probe")
     ap.add_argument("--name", default=None, help="the checkpoint's name in the head file (default: --model)")
     a = ap.parse_args()
     model, tok, cfg = infllm_v2.load(a.model)
@@ -50,6 +51,11 @@ def main():
         probe_info = {"prompts": a.probe_prompts, "nodes": a.nodes, "completeness": pr["completeness"],
                       "decode_check": pr["decode_check"], "seconds": round(pr["seconds"])}
         print("top heads by fix gain: " + ", ".join(f"{u} ({scores[u]:.3f})" for u in pr["ranking"][:8]))
+        kept_scores = os.path.splitext(a.out)[0] + ".scores.json"          # the probe is the expensive step: keep its result
+        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+        with open(kept_scores, "w") as f:
+            json.dump({"scores": scores, "probe": probe_info}, f, indent=1)
+        print(f"probe scores saved to {kept_scores} (pass --scores {kept_scores} to rerun the rule without the probe)")
     rows = ruler.read_prompts(a.prompts, a.rule_prompts)
     print(f"rule: the shipped selector on {len(rows)} calibration prompts")
     shipped = infllm_v2.evaluate(model, tok, rows)["accuracy"]
@@ -58,6 +64,9 @@ def main():
     with infllm_v2.full_attention_heads(model, every):
         full = infllm_v2.evaluate(model, tok, rows)["accuracy"]
     print(f"      shipped {shipped:.1f}, full attention {full:.1f}")
+    if full <= shipped:
+        raise SystemExit(f"the shipped selector scores {shipped:.1f} and full attention {full:.1f} on these {len(rows)} prompts: there is "
+                         "no gap for the rule to close. Use more prompts (--rule_prompts), or prompts on which the selector loses.")
 
     def run(units):
         with infllm_v2.full_attention_heads(model, units):
@@ -67,7 +76,8 @@ def main():
 
     kept = rule.threshold_rule(scores, run, shipped, full, share=a.share, max_units=a.max_heads)
     if kept["units"] is None:
-        raise SystemExit(f"no step of the sweep closes {a.share} of the gap: {kept['curve']}")
+        raise SystemExit(f"no step of the sweep closes {a.share} of the gap (heads, share): {kept['curve']}. "
+                         "Raise --max_heads, or use more prompts for the probe.")
     HeadSet(model=a.name or a.model, selector="InfLLM-V2", unit="key-value head", heads=kept["units"], total_units=total,
             source="scripts/calibrate.py: the threshold rule on the integrated fix gain", scores=scores,
             calibration={"prompts_file": os.path.abspath(a.prompts), "probe": probe_info, "rule_prompts": len(rows),
