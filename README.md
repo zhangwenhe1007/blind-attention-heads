@@ -44,6 +44,10 @@ The InfLLM-V2 attention kernels are not on PyPI. Build them from
 pytest          # a few seconds, no GPU
 ```
 
+The hooks were checked on a GPU against the scripts behind the paper's numbers. On the same prompts they generate
+identical text, for every mode of `scripts/evaluate.py` on InfLLM-V2-8B and for the shipped selector and the default
+fix on MiniCPM4-8B and MiniCPM4.1-8B.
+
 ## Quickstart: fix a checkpoint with its flagged heads
 
 Make RULER multi-key prompts with RULER's own generator (see the header of `scripts/make_ruler_prompts.sh` for the
@@ -96,8 +100,9 @@ python scripts/evaluate.py --model $M --prompts $P --mode full-attention-heads -
   adds heads is run on the calibration prompts with full attention in its heads, and the first step that closes 90
   percent of the gap between the shipped selector and full attention is kept.
 
-The probe is the expensive part: at 32K and 16 midpoint nodes it takes a few minutes per prompt on one GPU.
-`--probe_prompts` and `--rule_prompts` set how many prompts each step uses.
+The probe is the expensive part: at 32K and 16 midpoint nodes it takes about four minutes per prompt on an H100.
+`--probe_prompts` and `--rule_prompts` set how many prompts each step uses. Two runs of the probe on the same prompt
+differ in the third decimal of a score, because the backward pass of the attention kernels is not deterministic.
 
 ## Use it from Python
 
