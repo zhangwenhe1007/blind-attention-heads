@@ -1,7 +1,7 @@
 # Blind Attention Heads
 
 Code for **"Lost in a Few Heads: Diagnosing and Repairing Block Selection in Sparse Attention"**
-(Wenhe Zhang and Boxing Chen).
+(Wenhe Zhang and Boxing Chen, [arXiv:2611.21917](https://arxiv.org/abs/2611.21917)).
 
 Sparse attention models read a few blocks of keys for every query, at a budget fixed when the model ships, and can lose
 much of their long-context retrieval at that budget. The paper shows that the loss is made in a few heads, finds those
@@ -169,9 +169,10 @@ The package covers the InfLLM-V2 release. `research/` holds what it does not cov
 
 ```bibtex
 @article{zhang2026lost,
-  title  = {Lost in a Few Heads: Diagnosing and Repairing Block Selection in Sparse Attention},
-  author = {Zhang, Wenhe and Chen, Boxing},
-  year   = {2026}
+  title   = {Lost in a Few Heads: Diagnosing and Repairing Block Selection in Sparse Attention},
+  author  = {Zhang, Wenhe and Chen, Boxing},
+  journal = {arXiv preprint arXiv:2611.21917},
+  year    = {2026}
 }
 ```
 
